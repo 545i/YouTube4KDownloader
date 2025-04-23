@@ -1,0 +1,13 @@
+# 排除所有文件
+*
+
+# 不排除以下文件
+!main.py
+!core.py
+!gui.py
+
+# 不排除 .gitignore 本身
+!.gitignore
+
+# 不排除 README.md
+!README.md 
