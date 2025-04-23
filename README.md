@@ -17,7 +17,7 @@ A modern and user-friendly YouTube video downloader application built with Pytho
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/4K-Downloader.git
+git clone https://github.com/545i/4K-Downloader.git
 cd 4K-Downloader
 ```
 
@@ -65,8 +65,8 @@ python main.py
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the APL License - see the LICENSE file for details.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. 
+Contributions are welcome! Please feel free to submit a Pull Request.
