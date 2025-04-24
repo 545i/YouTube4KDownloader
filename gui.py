@@ -284,7 +284,7 @@ class YouTubeDownloaderGUI(QMainWindow):
         
 
         download_list_layout.addWidget(self.download_list)
-        content_layout.addWidget(download_list_container, 1)  # 1表示拉伸因子
+        content_layout.addWidget(download_list_container, 1)
         
 
         self.output_text = QTextEdit()
@@ -303,11 +303,11 @@ class YouTubeDownloaderGUI(QMainWindow):
         
 
         main_layout.addWidget(self.sidebar)
-        main_layout.addWidget(main_content, 1)  # 1表示拉伸因子
+        main_layout.addWidget(main_content, 1)
 
-        self.pending_items = []  # 儲存待下載項的URL
-        self.title_workers = {}  # 儲存標題獲取工作執行緒
-        self.workers = {}  # 儲存下載和縮圖工作執行緒
+        self.pending_items = []
+        self.title_workers = {} 
+        self.workers = {}
     
     def create_sidebar_content(self):
         """創建側邊欄內容"""
@@ -326,14 +326,14 @@ class YouTubeDownloaderGUI(QMainWindow):
         sidebar_layout.addWidget(url_label)
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("Enter YouTube video URL")
-        self.url_input.setObjectName("url_input")  # 添加對象名稱
+        self.url_input.setObjectName("url_input")
         sidebar_layout.addWidget(self.url_input)
         
 
         quality_label = QLabel("Quality")
         sidebar_layout.addWidget(quality_label)
         self.quality_combo = QComboBox()
-        self.quality_combo.setObjectName("quality_combo")  # 添加對象名稱
+        self.quality_combo.setObjectName("quality_combo")
         self.quality_combo.addItems([
             "Best Quality (4K/2160p)", 
             "Ultra HD (1440p)", 
@@ -348,7 +348,7 @@ class YouTubeDownloaderGUI(QMainWindow):
         format_label = QLabel("Format")
         sidebar_layout.addWidget(format_label)
         self.format_combo = QComboBox()
-        self.format_combo.setObjectName("format_combo")  # 添加對象名稱
+        self.format_combo.setObjectName("format_combo")
         self.format_combo.addItems([
             "MP4 (H.264)", 
             "MP4 (H.265/HEVC)", 
@@ -360,7 +360,7 @@ class YouTubeDownloaderGUI(QMainWindow):
         
 
         self.download_button = QPushButton("Add to Queue")
-        self.download_button.setObjectName("download_button")  # 添加對象名稱
+        self.download_button.setObjectName("download_button")
         self.download_button.clicked.connect(self.add_url)
         sidebar_layout.addWidget(self.download_button)
         
@@ -376,6 +376,25 @@ class YouTubeDownloaderGUI(QMainWindow):
             return
             
 
+        for i, (completed_url, _) in enumerate(self.completed_items):
+            if completed_url == url:
+                self.completed_items.pop(i)
+                for j in range(self.download_list.count()):
+                    if self.pending_items[j] == url:
+                        item = self.download_list.item(j)
+                        if item:
+                            widget = self.create_pending_item_widget(url)
+                            item.setSizeHint(widget.sizeHint())
+                            self.download_list.setItemWidget(item, widget)
+                            
+                            title_worker = TitleWorker(url)
+                            title_worker.finished.connect(lambda u, t, s: self.update_video_title(u, t, s))
+                            self.title_workers[url] = title_worker
+                            title_worker.start()
+                            
+                            self.update_output(f"✨ Reset download status for: {url}")
+                            return
+
         existing_index = -1
         for i in range(len(self.pending_items)):
             if self.pending_items[i] == url:
@@ -383,7 +402,6 @@ class YouTubeDownloaderGUI(QMainWindow):
                 break
         
         if existing_index >= 0:
-
             item = self.download_list.item(existing_index)
             if item:
                 widget = self.download_list.itemWidget(item)
@@ -396,11 +414,10 @@ class YouTubeDownloaderGUI(QMainWindow):
                         quality_label.setText(f"🎥 Quality: {self.quality_combo.currentText()}")
                         format_label.setText(f"📁 Format: {self.format_combo.currentText()}")
                 
-
                 download_btn = widget.findChild(QPushButton, "download_btn")
                 if download_btn:
                     download_btn.setEnabled(True)
-                    download_btn.setText("⬇️ Start Download")
+                    download_btn.setText("⬇️ Download")
                     download_btn.setStyleSheet("""
                         QPushButton {
                             background-color: #3498db;
@@ -419,7 +436,6 @@ class YouTubeDownloaderGUI(QMainWindow):
                         }
                     """)
                 
-
                 progress_bar = widget.findChild(QProgressBar)
                 if progress_bar:
                     progress_bar.hide()
@@ -428,20 +444,16 @@ class YouTubeDownloaderGUI(QMainWindow):
                 self.update_output(f"✨ Updated download settings: {url}")
             return
         
-
         item = QListWidgetItem()
         self.download_list.addItem(item)
         self.pending_items.append(url)
         
-
         self.url_input.clear()
         
-
         widget = self.create_pending_item_widget(url)
         item.setSizeHint(widget.sizeHint())
         self.download_list.setItemWidget(item, widget)
         
-
         title_worker = TitleWorker(url)
         title_worker.finished.connect(lambda u, t, s: self.update_video_title(u, t, s))
         self.title_workers[url] = title_worker
