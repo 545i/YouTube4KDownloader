@@ -125,6 +125,7 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.setWindowIcon(QIcon("icon.png"))
 
         self.member_button = None
+        self.completed_items = []
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
