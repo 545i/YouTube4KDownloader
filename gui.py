@@ -5,9 +5,9 @@ import urllib.request
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLineEdit, QPushButton, QLabel, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter,
-                            QFrame, QFileDialog, QProgressBar, QComboBox)
+                            QFrame, QFileDialog, QProgressBar, QComboBox, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QFont, QPixmap
+from PyQt6.QtGui import QIcon, QFont, QPixmap, QPainter
 import core
 import requests
 from io import BytesIO
@@ -15,62 +15,99 @@ from user import MemberPage
 from settings_page import SettingsPage 
 
 
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class DownloadWorker(QThread):
     """下載影片的工作執行緒"""
-    finished = pyqtSignal(str, str, str) 
+    finished = pyqtSignal(str, str, str)
     progress = pyqtSignal(str)
-    progress_percent = pyqtSignal(float) 
-    
+    progress_percent = pyqtSignal(float)
+
     def __init__(self, url, format_string):
         super().__init__()
         self.url = url
         self.format_string = format_string
         self.downloader = core.YouTubeDownloader(progress_hook=self.progress_hook)
+        self._is_running = True
         
     def progress_hook(self, d):
         if d['status'] == 'downloading':
-
             if 'total_bytes' in d and d['total_bytes'] > 0:
-                percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                # 下载阶段占总进度的50%
+                percent = (d['downloaded_bytes'] / d['total_bytes']) * 50
                 self.progress_percent.emit(percent)
 
             if 'speed' in d:
                 speed = d['speed']
                 if speed:
                     speed_mb = speed / 1024 / 1024
-                    self.progress.emit(f"⬇️ Downloading... {speed_mb:.1f} MB/s")
+                    self.progress.emit(f"⬇️ 下载中... {speed_mb:.1f} MB/s")
+                    
         elif d['status'] == 'processing':
-
-            message = d.get('message', 'Processing...')
-            self.progress.emit(f"🖌️ {message}")
-            self.progress_percent.emit(95)
+            # 水印处理阶段
+            if 'frame' in d and 'total_frames' in d:
+                # 水印处理阶段占总进度的50%
+                percent = 50 + (d['frame'] / d['total_frames']) * 50
+                self.progress_percent.emit(percent)
+                speed = d.get('speed', 0)
+                self.progress.emit(f"🖌️ 添加水印中... {speed}x 速度")
+            else:
+                # 如果没有具体进度信息，显示固定进度
+                self.progress_percent.emit(75)
+                self.progress.emit(f"🖌️ 添加水印中...")
+                
         elif d['status'] == 'finished':
-
-            message = d.get('message', 'Processing completed')
-            self.progress.emit(f"✅ {message}")
+            self.progress.emit(f"✅ {d.get('message', '处理完成')}")
             self.progress_percent.emit(100)
+            
         elif d['status'] == 'error':
-
-            message = d.get('message', 'Error')
-            self.progress.emit(f"❌ {message}")
+            self.progress.emit(f"❌ {d.get('message', '发生错误')}")
             self.progress_percent.emit(0)
         
     def run(self):
         try:
+            print(f"[DEBUG Worker] Starting download for: {self.url}")
+            print(f"[DEBUG Worker] Format string: {self.format_string}")
+            print(f"[DEBUG Worker] Is running: {self._is_running}")
+
+            if not self._is_running:
+                print(f"[DEBUG Worker] Not running, returning")
+                return
+
+            print(f"[DEBUG Worker] Calling downloader.download()")
             info, video_title, file_path = self.downloader.download(self.url, self.format_string)
-            
+            print(f"[DEBUG Worker] Download completed. File path: {file_path}")
+
+            if not self._is_running:
+                return
+
             if os.path.exists(file_path):
                 self.progress.emit(f"✅ Download completed: {os.path.basename(file_path)}")
                 self.finished.emit(self.url, "success", file_path)
             else:
                 raise Exception(f"File not found: {file_path}")
-                
+
         except Exception as e:
-            self.progress.emit(f"❌ Error: {str(e)}")
-            self.progress_percent.emit(0)
-            self.finished.emit(self.url, "error", "")
+            print(f"[DEBUG Worker] Exception caught: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            if self._is_running:
+                self.progress.emit(f"❌ Error: {str(e)}")
+                self.progress_percent.emit(0)
+                self.finished.emit(self.url, "error", "")
+
+    def stop(self):
+        """停止執行緒"""
+        self._is_running = False
+        self.terminate_ffmpeg_processes()
+
+    def terminate_ffmpeg_processes(self):
+        """终止所有ffmpeg进程"""
+        if hasattr(self, 'downloader'):
+            self.downloader.terminate_ffmpeg_processes()
+
+
 
 class ThumbnailWorker(QThread):
     """縮圖下載工作執行緒"""
@@ -89,13 +126,55 @@ class ThumbnailWorker(QThread):
                 pixmap = QPixmap()
                 pixmap.loadFromData(image_data.getvalue())
 
-                pixmap = pixmap.scaled(120, 68, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                # 缩放到预览尺寸
+                preview_width = 120
+                preview_height = 68
+                pixmap = pixmap.scaled(preview_width, preview_height, 
+                                     Qt.AspectRatioMode.KeepAspectRatio, 
+                                     Qt.TransformationMode.SmoothTransformation)
+                
+                # 获取浮水印位置信息
+                watermark_pos = core.get_watermark_position()
+                
+                # 加载Logo.png
+                logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Logo.png')
+                if os.path.exists(logo_path):
+                    logo_pixmap = QPixmap(logo_path)
+                    
+                    # 计算预览图中浮水印的相对大小
+                    scale_factor = preview_width / 1920  # 假设原始视频宽度为1920
+                    wm_width = int(watermark_pos['scale_width'] * scale_factor)
+                    wm_height = int(watermark_pos['scale_height'] * scale_factor)
+                    
+                    # 缩放Logo到对应大小
+                    logo_pixmap = logo_pixmap.scaled(wm_width, wm_height, 
+                                                   Qt.AspectRatioMode.KeepAspectRatio,
+                                                   Qt.TransformationMode.SmoothTransformation)
+                    
+                    # 在预览图上绘制Logo，使用core.get_watermark_position()返回的位置
+                    painter = QPainter(pixmap)
+                    painter.setOpacity(0.7)  # 设置透明度
+                    
+                    # 解析x和y坐标
+                    x = watermark_pos['x']
+                    y = watermark_pos['y']
+                    
+                    # 替换变量为实际值
+                    x = x.replace('W', str(preview_width)).replace('w', str(wm_width))
+                    y = y.replace('H', str(preview_height)).replace('h', str(wm_height))
+                    
+                    # 计算最终位置
+                    x_pos = eval(x)
+                    y_pos = eval(y)
+                    
+                    painter.drawPixmap(x_pos, y_pos, logo_pixmap)
+                    painter.end()
+
                 self.finished.emit(self.url, pixmap)
         except Exception as e:
             print(f"Error downloading thumbnail: {e}")
-
             self.finished.emit(self.url, QPixmap())
-
+            
 class TitleWorker(QThread):
     """獲取影片標題和封面的工作執行緒"""
     finished = pyqtSignal(str, str, str) 
@@ -126,6 +205,7 @@ class YouTubeDownloaderGUI(QMainWindow):
 
         self.member_button = None
         self.completed_items = []
+        self.settings_page = None  # 添加设置页面引用
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -312,12 +392,10 @@ class YouTubeDownloaderGUI(QMainWindow):
     
     def create_sidebar_content(self):
         """創建側邊欄內容"""
-
         sidebar_layout = QVBoxLayout()
         sidebar_layout.setContentsMargins(20, 20, 20, 20)
         sidebar_layout.setSpacing(5)
         
-
         title_label = QLabel("4K Downloader")
         title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 20px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -329,7 +407,6 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.url_input.setPlaceholderText("Enter YouTube video URL")
         self.url_input.setObjectName("url_input")
         sidebar_layout.addWidget(self.url_input)
-        
 
         quality_label = QLabel("Quality")
         sidebar_layout.addWidget(quality_label)
@@ -344,30 +421,54 @@ class YouTubeDownloaderGUI(QMainWindow):
             "Smooth (360p)"
         ])
         sidebar_layout.addWidget(self.quality_combo)
-        
 
         format_label = QLabel("Format")
         sidebar_layout.addWidget(format_label)
         self.format_combo = QComboBox()
         self.format_combo.setObjectName("format_combo")
         self.format_combo.addItems([
-            "MP4 (H.264)", 
-            "MP4 (H.265/HEVC)", 
-            "MKV (H.264)", 
-            "MKV (H.265/HEVC)", 
-            "WEBM (VP9)"
+            "MP4 (H.264)",
+            "MP4 (H.265/HEVC)",
+            "MKV (H.264)",
+            "MKV (H.265/HEVC)",
+            "WEBM (VP9)",
+            "Audio Only (M4A/OPUS)"
         ])
         sidebar_layout.addWidget(self.format_combo)
-        
 
         self.download_button = QPushButton("Add to Queue")
         self.download_button.setObjectName("download_button")
         self.download_button.clicked.connect(self.add_url)
         sidebar_layout.addWidget(self.download_button)
         
+        # 添加设置按钮
+        settings_btn = QPushButton()
+        settings_btn.setIcon(QIcon("assets/settings.png"))
+        settings_btn.setIconSize(QSize(24, 24))  # 设置图标大小
+        settings_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        settings_btn.setFixedSize(32, 32)  # 设置按钮大小
+        settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+            }
+        """)
+        settings_btn.clicked.connect(self.show_settings)
+        
+        # 创建容器来居中设置按钮
+        settings_container = QWidget()
+        settings_layout = QHBoxLayout(settings_container)
+        settings_layout.addStretch()
+        settings_layout.addWidget(settings_btn)
+        settings_layout.addStretch()
+        sidebar_layout.addWidget(settings_container)
 
         sidebar_layout.addStretch()
-        
         return sidebar_layout
     
     def add_url(self):
@@ -482,7 +583,10 @@ class YouTubeDownloaderGUI(QMainWindow):
                 break
         
         if url in self.title_workers:
-            self.title_workers[url].deleteLater()
+            worker = self.title_workers[url]
+            if worker.isRunning():
+                worker.wait(500)
+            worker.deleteLater()
             del self.title_workers[url]
     
     def on_thumbnail_downloaded(self, url, pixmap):
@@ -497,7 +601,10 @@ class YouTubeDownloaderGUI(QMainWindow):
                 break
         
         if f"{url}_thumbnail" in self.workers:
-            self.workers[f"{url}_thumbnail"].deleteLater()
+            worker = self.workers[f"{url}_thumbnail"]
+            if worker.isRunning():
+                worker.wait(500)
+            worker.deleteLater()
             del self.workers[f"{url}_thumbnail"]
     
     def create_pending_item_widget(self, url):
@@ -814,6 +921,12 @@ class YouTubeDownloaderGUI(QMainWindow):
     
     def get_format_string(self):
         """根據選擇的畫質和格式返回對應的format字串"""
+        selected_format = self.format_combo.currentText()
+
+        # 如果選擇音頻格式，返回音頻專用的格式字串
+        if selected_format == "Audio Only (M4A/OPUS)":
+            return "bestaudio/best"  # 如果音頻不可用，回退到完整視頻
+
         quality_map = {
             "Best Quality (4K/2160p)": 2160,
             "Ultra HD (1440p)": 1440,
@@ -832,14 +945,15 @@ class YouTubeDownloaderGUI(QMainWindow):
             "MKV (H.265/HEVC)": "bestvideo[height<={height}][vcodec^=hev]+bestaudio/best[height<={height}]",
             "WEBM (VP9)": "bestvideo[height<={height}][vcodec^=vp9]+bestaudio[ext=webm]/best[height<={height}]"
         }
-        selected_format = self.format_combo.currentText()
         format_string = format_map.get(selected_format, format_map["MP4 (H.264)"])
-        
+
         return format_string.format(height=height)
     
     def start_download(self, url):
         """開始下載影片"""
+        print(f"[DEBUG] start_download called with URL: {url}")
         self.update_output(f"Starting download: {url}")
+        print(f"[DEBUG] Updated output")
         
         for i in range(self.download_list.count()):
             item = self.download_list.item(i)
@@ -862,13 +976,21 @@ class YouTubeDownloaderGUI(QMainWindow):
                     }
                 """)
                 
-                worker = DownloadWorker(url, self.get_format_string())
+                format_string = self.get_format_string()
+                print(f"[DEBUG] Format string: {format_string}")
+
+                worker = DownloadWorker(url, format_string)
+                print(f"[DEBUG] Worker created")
+
                 self.workers[url] = worker
                 worker.progress.connect(self.update_output)
                 worker.progress_percent.connect(lambda p: progress_bar.setValue(int(p)))
                 worker.finished.connect(self.on_download_finished)
+
+                print(f"[DEBUG] Starting worker thread")
                 worker.start()
-                
+                print(f"[DEBUG] Worker thread started")
+
                 break
     
     def on_download_finished(self, url, status, file_path):
@@ -899,7 +1021,10 @@ class YouTubeDownloaderGUI(QMainWindow):
                 
 
                 if url in self.workers:
-                    self.workers[url].deleteLater()
+                    worker = self.workers[url]
+                    if worker.isRunning():
+                        worker.wait(1000)  # 等待執行緒完成
+                    worker.deleteLater()
                     del self.workers[url]
                     self.update_output(f"DEBUG: Cleaning worker")
                 
@@ -948,6 +1073,47 @@ class YouTubeDownloaderGUI(QMainWindow):
                 self.update_output(f"❌ Failed to open folder: {str(e)}")
         else:
             self.update_output(f"❌ Folder not found: {folder_path}")
+
+    def show_settings(self):
+        """显示设置页面"""
+        if not self.settings_page:
+            self.settings_page = SettingsPage(self)
+        
+        # 重新计算并设置位置，确保总是居中于主窗口
+        parent_geometry = self.geometry()
+        x = parent_geometry.x() + (parent_geometry.width() - self.settings_page.width()) // 2
+        y = parent_geometry.y() + (parent_geometry.height() - self.settings_page.height()) // 2
+        self.settings_page.move(x, y)
+        
+        self.settings_page.show()
+
+    def closeEvent(self, event):
+        """关闭主窗口时的处理"""
+        # 停止所有下載執行緒
+        for url, worker in list(self.workers.items()):
+            if isinstance(worker, DownloadWorker):
+                if worker.isRunning():
+                    worker.stop()  # 使用新的 stop 方法
+                    worker.wait(2000)  # 等待最多2秒
+                    if worker.isRunning():
+                        worker.terminate()
+                        worker.wait(1000)
+            elif isinstance(worker, QThread):
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
+
+        # 停止所有標題執行緒
+        for worker in list(self.title_workers.values()):
+            if worker.isRunning():
+                worker.terminate()
+                worker.wait(1000)
+
+        # 关闭设置页面
+        if self.settings_page:
+            self.settings_page.close()
+
+        event.accept()
 
 
 if __name__ == "__main__":
